@@ -91,17 +91,17 @@ docker compose up -d       # starts Postgres on localhost:5432
 
 ## Prior art evaluated
 
-Before building this, we checked for existing solutions:
+Before building this, I checked for existing solutions:
 
 - **Anthropic's own tracker**: shared team memory for Claude Code is an
   open, unresolved feature request
   ([anthropics/claude-code#38536](https://github.com/anthropics/claude-code/issues/38536)) —
   not natively supported.
-- **`pg-mnemosyne-mcp`** (closest open-source match): Postgres-backed, but
-  its "coordination hub" is a presence bulletin board only — no version
-  column, no optimistic locking, no audit trail, and a `run_sql` tool that's
-  a real SQL-injection surface for a shared multi-user store. Not viable to
-  fork as-is.
+- **The closest self-hostable, open-source alternative** was Postgres-backed,
+  but its take on multi-agent coordination was a presence "bulletin board"
+  only — no version column, no optimistic locking, no audit trail. It solves
+  visibility, not the actual concurrency-safety problem, so it wasn't a
+  viable base to build on.
 - **`evalops/shared-memory-mcp`**: solves a different problem (one
   operator's parallel subagent fleet), not separate teammates on separate
   machines.
@@ -115,3 +115,7 @@ Before building this, we checked for existing solutions:
 - `/conventions/` — team coding standards, naming rules
 - `/gotchas/` — known pitfalls, flaky tests, footguns
 - `/glossary/` — project-specific domain terms
+
+## License
+
+[MIT](LICENSE)
