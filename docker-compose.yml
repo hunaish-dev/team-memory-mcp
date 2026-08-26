@@ -1,0 +1,15 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: team-memory-postgres
+    environment:
+      POSTGRES_DB: team_memory
+      POSTGRES_USER: team_memory
+      POSTGRES_PASSWORD: team_memory
+    ports:
+      - "5432:5432"
+    volumes:
+      - team-memory-data:/var/lib/postgresql/data
+
+volumes:
+  team-memory-data:
