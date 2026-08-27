@@ -3,6 +3,8 @@ package com.teammemory.mcp.mcp;
 import com.teammemory.mcp.memory.MemoryCategory;
 import com.teammemory.mcp.memory.MemoryEntry;
 import com.teammemory.mcp.memory.MemoryService;
+import com.teammemory.mcp.security.McpAuthContext;
+import io.modelcontextprotocol.common.McpTransportContext;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
@@ -11,8 +13,10 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
@@ -93,6 +97,10 @@ class MemoryToolsTest {
         assertThat(result.version()).isEqualTo(e.getVersion());
     }
 
+    private static McpTransportContext contextFor(String actor) {
+        return McpTransportContext.create(Map.of(McpAuthContext.ACTOR_KEY, actor));
+    }
+
     @Test
     void memoryWriteParsesCategoryAndDelegatesAllParameters() {
         ArgumentCaptor<MemoryCategory> categoryCaptor = ArgumentCaptor.forClass(MemoryCategory.class);
@@ -100,7 +108,7 @@ class MemoryToolsTest {
         when(memoryService.write(eq("/conventions/x.md"), categoryCaptor.capture(), eq("content"), eq(5L), eq("ali")))
                 .thenReturn(e);
 
-        MemoryWriteResult result = tools.memoryWrite("/conventions/x.md", "convention", "content", 5L, "ali");
+        MemoryWriteResult result = tools.memoryWrite("/conventions/x.md", "convention", "content", 5L, contextFor("ali"));
 
         assertThat(categoryCaptor.getValue()).isEqualTo(MemoryCategory.CONVENTION);
         assertThat(result.path()).isEqualTo("/conventions/x.md");
@@ -113,8 +121,14 @@ class MemoryToolsTest {
         when(memoryService.write(eq("/glossary/x.md"), eq(MemoryCategory.GLOSSARY), eq("term"), isNull(), eq("ali")))
                 .thenReturn(e);
 
-        tools.memoryWrite("/glossary/x.md", "glossary", "term", null, "ali");
+        tools.memoryWrite("/glossary/x.md", "glossary", "term", null, contextFor("ali"));
 
         verify(memoryService).write("/glossary/x.md", MemoryCategory.GLOSSARY, "term", null, "ali");
+    }
+
+    @Test
+    void memoryWriteRejectsAMissingActorRatherThanRecordingABlankOne() {
+        assertThatThrownBy(() -> tools.memoryWrite("/x.md", "gotcha", "content", null, McpTransportContext.EMPTY))
+                .isInstanceOf(IllegalStateException.class);
     }
 }

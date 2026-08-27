@@ -3,6 +3,8 @@ package com.teammemory.mcp.mcp;
 import com.teammemory.mcp.memory.MemoryCategory;
 import com.teammemory.mcp.memory.MemoryEntry;
 import com.teammemory.mcp.memory.MemoryService;
+import com.teammemory.mcp.security.McpAuthContext;
+import io.modelcontextprotocol.common.McpTransportContext;
 import org.springframework.ai.mcp.annotation.McpTool;
 import org.springframework.ai.mcp.annotation.McpToolParam;
 import org.springframework.stereotype.Component;
@@ -60,10 +62,27 @@ public class MemoryTools {
             String content,
             @McpToolParam(description = "The version last read via memory_read. Required when updating an existing memory; omit when creating a new one.", required = false)
             Long expectedVersion,
-            @McpToolParam(description = "Identifier for who/what is writing, e.g. your username", required = true)
-            String actor) {
+            McpTransportContext transportContext) {
         MemoryEntry entry = memoryService.write(
-                path, MemoryCategory.valueOf(category.trim().toUpperCase()), content, expectedVersion, actor);
+                path, MemoryCategory.valueOf(category.trim().toUpperCase()), content, expectedVersion,
+                actorFrom(transportContext));
         return MemoryWriteResult.from(entry);
+    }
+
+    /**
+     * The actor is resolved server-side from the authenticated caller (see
+     * SecurityConfig's contextExtractor), never supplied by the client — a
+     * null here means every request to /mcp is authenticated (enforced by
+     * SecurityConfig) but the extractor didn't populate the context, which is
+     * a configuration bug worth failing loudly on rather than silently
+     * recording a bad actor value in the audit trail.
+     */
+    private static String actorFrom(McpTransportContext transportContext) {
+        Object actor = transportContext.get(McpAuthContext.ACTOR_KEY);
+        if (!(actor instanceof String actorName) || actorName.isBlank()) {
+            throw new IllegalStateException(
+                    "No authenticated actor in transport context — this should be unreachable given /mcp requires authentication.");
+        }
+        return actorName;
     }
 }

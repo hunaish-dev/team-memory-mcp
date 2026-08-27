@@ -28,13 +28,44 @@ the evaluation notes below.
 - **Soft delete** (`deleted_at`) rather than hard `DELETE`, so the trigger
   can capture a `DELETED` version without the actor-on-delete problem a hard
   delete creates, and so a path can be safely reused later.
+- **API-key auth**, one key per teammate, resolved server-side into the
+  audit trail's `actor` — see [Authentication](#authentication) below.
+
+## Authentication
+
+Every request to `/mcp` requires `Authorization: Bearer <key>`
+(`/actuator/health` and `/actuator/info` stay open). There is no `actor`
+parameter on any tool anymore — the server resolves who's calling from the
+key itself, so a client can't claim to be someone else.
+
+Issue a key (one per teammate):
+
+```bash
+./mvnw spring-boot:run -Dspring-boot.run.arguments="--issue-api-key=ali"
+```
+
+Prints the raw token once — it is never stored or shown again, only its
+SHA-256 hash is. Register it with Claude Code:
+
+```bash
+claude mcp add --transport http team-memory-mcp http://localhost:8080/mcp \
+  --scope user --header "Authorization: Bearer <token>"
+```
+
+Keys are hashed with SHA-256, not bcrypt/argon2 — the token is a 256-bit
+`SecureRandom` value, not a human-chosen password, so adaptive hashing would
+only tax every request for no security benefit (same reasoning GitHub/Stripe
+use for API tokens).
 
 ## Status
 
-Schema, JPA layer, and MCP tool layer all built and verified end-to-end
-against a real Postgres — create, conflicting write (rejected, zero DB
-writes), correct-version write (accepted, version incremented), and the
-resulting audit trail all confirmed via the raw MCP streamable-HTTP protocol.
+Schema, JPA layer, MCP tool layer, and API-key auth all built and verified
+end-to-end against a real Postgres and, separately, a real Claude Code
+client — create, conflicting write (rejected, zero DB writes), correct-
+version write (accepted, version incremented), the resulting audit trail,
+and now auth (401 with no/wrong/revoked key, correct `actor` recorded from
+the authenticated key) all confirmed via the raw MCP streamable-HTTP
+protocol.
 
 Server exposes 3 tools over MCP streamable-HTTP at `POST /mcp`:
 `memory_list`, `memory_read`, `memory_write` (see `MemoryTools.java`).
@@ -44,33 +75,45 @@ version mismatch — or a genuine race caught by JPA's `@Version` at flush
 time — comes back as an MCP error result (`isError: true`), which Claude
 sees and can act on by re-reading and retrying.
 
-Test suite: 19 tests, all green.
+Test suite: 37 tests, all green.
 - `MemoryServiceIT` (12, Testcontainers + real Postgres) — create, conflict
   paths, read, list filters, the audit trail, soft-delete-and-reuse-path, and
   a genuine two-thread concurrency race (asserts exactly one of two
   simultaneous conflicting writes succeeds — verified stable across repeated
   runs, not just a single pass).
-- `MemoryToolsTest` (6, Mockito) — category parsing, DTO mapping, parameter
-  delegation at the MCP tool boundary.
+- `MemoryToolsTest` (7, Mockito) — category parsing, DTO mapping, parameter
+  delegation at the MCP tool boundary, including the auth-context handoff.
+- `ApiKeyHasherTest` / `ApiKeyIssuerTest` (8, unit) — token generation,
+  hashing, uniqueness.
+- `ApiKeyAuthenticationFilterTest` (4, Mockito) — valid/missing/unknown key
+  behavior at the filter level.
+- `ApiKeySecurityIT` (4, Testcontainers + MockMvc) — 401 for no/wrong/revoked
+  key at the real HTTP boundary; `/actuator/health` stays open.
+- `McpAuthenticationIT` (1, Testcontainers + MockMvc) — the load-bearing
+  test: drives the real streamable-HTTP wire protocol with a valid key and
+  confirms the resulting `memory_entry.created_by` matches the key's
+  teammate — proves the `McpTransportContext` plumbing works at runtime, not
+  just that the auth filter runs.
 - `TeamMemoryMcpApplicationTests` (1) — full context/wiring smoke test.
 
 Run `./mvnw test` for the fast unit tests, `./mvnw verify` for the full
 suite including the container-backed integration tests (needs Docker
-running). `MemoryServiceIT` uses the `*IT` naming convention on purpose —
-Maven Failsafe (bound to `verify`) picks those up, Surefire (`test`) doesn't,
-keeping the fast/slow split explicit as more tests get added.
+running). `*IT`-suffixed tests use the Maven Failsafe naming convention on
+purpose — Failsafe (bound to `verify`) picks those up, Surefire (`test`)
+doesn't, keeping the fast/slow split explicit as more tests get added.
 
 **Not yet done:**
-- No `actor` auto-detection — callers must pass their own identifier today
-  (e.g. `$USER`). Worth revisiting once real MCP session-identity support is
-  confirmed.
 - Not deployed anywhere — currently local-only (`docker compose up` +
   `./mvnw spring-boot:run`). Teammates need a running instance at a shared
   URL, plus the corresponding `CLAUDE.md` convention (read-first, write-last)
-  wired into their `mcpServers` config.
-- No MCP-protocol-level integration test (i.e. an actual JSON-RPC round trip
-  against a running server) — that flow was verified manually via curl
-  during development but isn't automated yet.
+  wired into their `mcpServers` config — though this turned out to be
+  optional in practice; the tool descriptions alone are enough to induce
+  correct proactive behavior without any priming.
+- No key revocation CLI/endpoint yet — `api_key.revoked_at` and
+  `ApiKey.revoke()` exist and are exercised in tests, but there's no
+  operator-facing way to call it outside a direct DB/REPL action.
+- No rate limiting on the auth layer — fine for a small internal tool
+  today, worth adding before any wider exposure.
 
 ## Local development
 
@@ -79,7 +122,7 @@ docker compose up -d       # starts Postgres on localhost:5432
 ./mvnw spring-boot:run      # runs Flyway migrations, then the app on :8080
 ```
 
-### Two Spring Boot 4.1.1 gotchas hit while building this (both fixed, worth remembering)
+### Spring Boot 4.1.1 gotchas hit while building this (all fixed, worth remembering)
 
 - `flyway-core` alone does **not** wire up Flyway anymore — autoconfiguration
   moved behind the dedicated `spring-boot-starter-flyway` artifact. Without
@@ -88,6 +131,26 @@ docker compose up -d       # starts Postgres on localhost:5432
 - `@Lob` on a `String` field maps to Postgres `oid` (large object) by
   default in this Hibernate version, not `text`. Removed it — these are
   ordinary text fields, plain `String` maps to `TEXT` correctly.
+- `TestRestTemplate` moved to a new module (`org.springframework.boot.
+  resttestclient.TestRestTemplate`, package `spring-boot-resttestclient`)
+  and now needs an explicit `@AutoConfigureTestRestTemplate` — no longer
+  auto-wired by `@SpringBootTest(webEnvironment = RANDOM_PORT)` alone. Its
+  autoconfiguration also has a hard transitive dependency
+  (`spring-boot-restclient`'s `RestTemplateBuilder`) that isn't pulled in by
+  default, which surfaces as a confusing `NoClassDefFoundError` deep inside
+  Spring's condition evaluation, not a straightforward "missing dependency"
+  message. Used `MockMvc` instead (already available transitively via
+  `spring-boot-starter-webmvc-test`, needs `@AutoConfigureMockMvc`, package
+  now `org.springframework.boot.webmvc.test.autoconfigure`) — no extra
+  dependency needed and it doesn't require a real bound port.
+- An unauthenticated request against `anyRequest().authenticated()` returns
+  **403, not 401**, unless you configure an explicit
+  `AuthenticationEntryPoint`. Spring Security's `AnonymousAuthenticationFilter`
+  runs by default, so a request with no credentials isn't "unauthenticated"
+  from the framework's point of view — it's authenticated *as anonymous*,
+  which then fails the authorization check (403) rather than the
+  authentication check (401). Fixed with
+  `.exceptionHandling(ex -> ex.authenticationEntryPoint(new HttpStatusEntryPoint(HttpStatus.UNAUTHORIZED)))`.
 
 ## Prior art evaluated
 
